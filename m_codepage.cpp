@@ -46,7 +46,7 @@ typedef nspace::hash_map<int, std::string> hash_save;		/* file descriptor		-> en
 typedef nspace::hash_map<int, io_buffer> hash_buffer;		/* file descriptor		-> read multibyte buffer */
 
 const char * modulenames[] = {"m_ssl_gnutls.so", "m_ssl_openssl.so", "m_xmlsocket.so"};
-static Implementation eventlist[] = { I_OnRehash, I_OnHookIO, I_OnUnloadModule };
+static Implementation eventlist[] = { I_OnRehash, I_OnHookIO, I_OnUnloadModule, I_On005Numeric, I_OnWhoisLine, I_OnUserRegister };
 
 #define with_iterator(type, name) \
 	static type name; \
@@ -83,6 +83,20 @@ void ToUpper(std::string& s)
 #define ModifyIOHook(eh, mod)  (&eh)->DelIOHook(); \
 		(&eh)->AddIOHook( mod )
 
+class ModuleCodepageBase : public Module
+{
+    public:
+        StringExtItem ecodepage;
+        ModuleCodepageBase()
+            : ecodepage("codepage", this)
+        {};
+
+        void set_codepage(LocalUser* u, int c)
+        {
+            fd_hash[u->eh.GetFd()] = c;
+            ServerInstance->PI->SendMetaData(u, "codepage", recode[c].encoding);
+        }
+};
 
 class CommandCodepage : public SplitCommand
 {
@@ -120,7 +134,7 @@ class CommandCodepage : public SplitCommand
             {
                 if (fd_hash[user->eh.GetFd()] != iter->second)
                 {
-                    fd_hash[user->eh.GetFd()] = iter->second;
+                    ((ModuleCodepageBase*)(Module*)creator)->set_codepage(user, iter->second);
                     user->WriteNumeric(700, "%s %s :is now your translation scheme", user->nick.c_str(), codepage.c_str());
                     return CMD_SUCCESS;
                 }
@@ -189,7 +203,7 @@ class CommandSacodepage : public Command
                 {
                     if (fd_hash[udest->eh.GetFd()] != iter->second)
                     {
-                        fd_hash[udest->eh.GetFd()] = iter->second;
+                        ((ModuleCodepageBase*)(Module*)creator)->set_codepage(udest, iter->second);
                         dest->WriteNumeric(700, "%s %s :is now your translation scheme", dest->nick.c_str(), codepage.c_str());
                         return CMD_SUCCESS;
                     }
@@ -266,7 +280,7 @@ class CommandCodepages : public Command
         }
 };
 
-class ModuleCodepage : public Module
+class ModuleCodepage : public ModuleCodepageBase
 {
     private:
         ServiceProvider iohook;
@@ -278,6 +292,29 @@ class ModuleCodepage : public Module
         ModuleCodepage()
             : iohook(this, "codepage/lwb", SERVICE_IOHOOK), mycommand(this), mycommand2(this), mycommand3(this)
         {
+        }
+
+        ModResult OnUserRegister(LocalUser *user)
+        {
+            if_found_in_hash(iter, user->eh.GetFd(), fd_hash)
+            ServerInstance->PI->SendMetaData(user, "codepage", recode[iter->second].encoding);
+            return MOD_RES_PASSTHRU;
+        }
+
+        ModResult OnWhoisLine(User* user, User* dest, int &numeric, std::string &text)
+        {
+            /* We use this and not OnWhois because this triggers for remote, too */
+            if (numeric == 312)
+            {
+                /* Insert our numeric before 312 */
+                const std::string* ucodepage = ecodepage.get(dest);
+                if (ucodepage)
+                {
+                    ServerInstance->SendWhoisLine(user, dest, 320, "%s %s :codepage is %s", user->nick.c_str(), dest->nick.c_str(), ucodepage->c_str());
+                }
+            }
+            /* Don't block anything */
+            return MOD_RES_PASSTHRU;
         }
 
         void init()
@@ -335,9 +372,9 @@ class ModuleCodepage : public Module
                 if (found == 0)
                 {
                     if_found_in_hash(iter2, (*iter)->GetServerPort(), port_hash)
-                    fd_hash[fd] = iter2->second;
+                    found = iter2->second;
                 }
-                fd_hash[fd] = found;
+                set_codepage((*iter), found);
             }
         }
 
@@ -859,6 +896,11 @@ class ModuleCodepage : public Module
             }
         }
 
+        virtual void On005Numeric(std::string& output)
+        {
+            output += " CODEPAGES";
+        }
+
         void OnUnloadModule  (Module* mod)
         {
             std::vector<User *> cleanup;
@@ -943,7 +985,7 @@ class ModuleCodepage : public Module
 
         virtual Version GetVersion()
         {
-            return Version("$Id$", VF_NONE);
+            return Version("$Id$", VF_OPTCOMMON);
         }
 
 };
