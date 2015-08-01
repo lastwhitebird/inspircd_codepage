@@ -94,6 +94,7 @@ class ModuleCodepageBase : public Module
         void set_codepage(LocalUser* u, int c)
         {
             fd_hash[u->eh.GetFd()] = c;
+            ecodepage.set(u, recode[c].encoding);
             ServerInstance->PI->SendMetaData(u, "codepage", recode[c].encoding);
         }
 };
@@ -297,7 +298,10 @@ class ModuleCodepage : public ModuleCodepageBase
         ModResult OnUserRegister(LocalUser *user)
         {
             if_found_in_hash(iter, user->eh.GetFd(), fd_hash)
-            ServerInstance->PI->SendMetaData(user, "codepage", recode[iter->second].encoding);
+            {
+                ecodepage.set(user, recode[iter->second].encoding);
+                ServerInstance->PI->SendMetaData(user, "codepage", recode[iter->second].encoding);
+            }
             return MOD_RES_PASSTHRU;
         }
 
@@ -325,6 +329,7 @@ class ModuleCodepage : public ModuleCodepageBase
             ServerInstance->Modules->AddService(mycommand);
             ServerInstance->Modules->AddService(mycommand2);
             ServerInstance->Modules->AddService(mycommand3);
+            ServerInstance->Modules->AddService(ecodepage);
         }
 
         void SaveExisting()
