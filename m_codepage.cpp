@@ -62,6 +62,20 @@ with_iterator(hash_save, buffer_hash_write);
 with_iterator(hash_buffer, buffer_hash);
 static std::vector<io_iconv> recode;
 static unsigned int bound;
+static char* buffer;
+static int buffer_size;
+static char* large_buffer;
+static int large_buffer_size;
+
+inline void ensure_capacity(char*& b, int& prevc, int newc)
+{
+	if (newc > prevc)
+	{
+		delete [] b;
+		b = new char[newc];
+		prevc = newc;
+	}
+}
 
 char toUpper_ (char c)
 {
@@ -85,18 +99,18 @@ void ToUpper(std::string& s)
 
 class ModuleCodepageBase : public Module
 {
-    public:
-        StringExtItem ecodepage;
-        ModuleCodepageBase()
-            : ecodepage("codepage", this)
-        {};
+public:
+	StringExtItem ecodepage;
+	ModuleCodepageBase()
+		: ecodepage("codepage", this)
+	{};
 
-        void set_codepage(LocalUser* u, int c)
-        {
-            fd_hash[u->eh.GetFd()] = c;
-            ecodepage.set(u, recode[c].encoding);
-            ServerInstance->PI->SendMetaData(u, "codepage", recode[c].encoding);
-        }
+	void set_codepage(LocalUser* u, int c)
+	{
+		fd_hash[u->eh.GetFd()] = c;
+		ecodepage.set(u, recode[c].encoding);
+		ServerInstance->PI->SendMetaData(u, "codepage", recode[c].encoding);
+	}
 };
 
 class CommandCodepage : public SplitCommand
@@ -135,7 +149,7 @@ class CommandCodepage : public SplitCommand
             {
                 if (fd_hash[user->eh.GetFd()] != iter->second)
                 {
-                    ((ModuleCodepageBase*)(Module*)creator)->set_codepage(user, iter->second);
+					((ModuleCodepageBase*)(Module*)creator)->set_codepage(user, iter->second);
                     user->WriteNumeric(700, "%s %s :is now your translation scheme", user->nick.c_str(), codepage.c_str());
                     return CMD_SUCCESS;
                 }
@@ -204,8 +218,8 @@ class CommandSacodepage : public Command
                 {
                     if (fd_hash[udest->eh.GetFd()] != iter->second)
                     {
-                        ((ModuleCodepageBase*)(Module*)creator)->set_codepage(udest, iter->second);
-                        dest->WriteNumeric(700, "%s %s :is now your translation scheme", dest->nick.c_str(), codepage.c_str());
+						((ModuleCodepageBase*)(Module*)creator)->set_codepage(udest, iter->second);
+						dest->WriteNumeric(700, "%s %s :is now your translation scheme", dest->nick.c_str(), codepage.c_str());
                         return CMD_SUCCESS;
                     }
                     else
@@ -290,47 +304,51 @@ class ModuleCodepage : public ModuleCodepageBase
         CommandCodepages mycommand3;
         std::string icodepage, dcodepage;
     public:
-        ModuleCodepage()
-            : iohook(this, "codepage/lwb", SERVICE_IOHOOK), mycommand(this), mycommand2(this), mycommand3(this)
+		ModuleCodepage()
+			: iohook(this, "codepage/lwb", SERVICE_IOHOOK), mycommand(this), mycommand2(this), mycommand3(this)
         {
         }
 
-        ModResult OnUserRegister(LocalUser *user)
-        {
-            if_found_in_hash(iter, user->eh.GetFd(), fd_hash)
-            {
-                ecodepage.set(user, recode[iter->second].encoding);
-                ServerInstance->PI->SendMetaData(user, "codepage", recode[iter->second].encoding);
-            }
-            return MOD_RES_PASSTHRU;
-        }
+		ModResult OnUserRegister(LocalUser *user)
+		{
+			if_found_in_hash(iter, user->eh.GetFd(), fd_hash)
+			{
+				ecodepage.set(user, recode[iter->second].encoding);
+				ServerInstance->PI->SendMetaData(user, "codepage", recode[iter->second].encoding);
+			}
+			return MOD_RES_PASSTHRU;
+		}
 
-        ModResult OnWhoisLine(User* user, User* dest, int &numeric, std::string &text)
-        {
-            /* We use this and not OnWhois because this triggers for remote, too */
-            if (numeric == 312)
-            {
-                /* Insert our numeric before 312 */
-                const std::string* ucodepage = ecodepage.get(dest);
-                if (ucodepage)
-                {
-                    ServerInstance->SendWhoisLine(user, dest, 320, "%s %s :codepage is %s", user->nick.c_str(), dest->nick.c_str(), ucodepage->c_str());
-                }
-            }
-            /* Don't block anything */
-            return MOD_RES_PASSTHRU;
-        }
+		ModResult OnWhoisLine(User* user, User* dest, int &numeric, std::string &text)
+		{
+			/* We use this and not OnWhois because this triggers for remote, too */
+			if (numeric == 312)
+			{
+				/* Insert our numeric before 312 */
+				const std::string* ucodepage = ecodepage.get(dest);
+				if (ucodepage)
+				{
+					ServerInstance->SendWhoisLine(user, dest, 320, "%s %s :codepage is %s", user->nick.c_str(), dest->nick.c_str(), ucodepage->c_str());
+				}
+			}
+			/* Don't block anything */
+			return MOD_RES_PASSTHRU;
+		}
 
         void init()
         {
+			buffer_size = 512 + 4;
+			large_buffer_size = buffer_size * 4 + 4;
+			buffer = new char[buffer_size];
+			large_buffer = new char[large_buffer_size];
             OnRehash(NULL);
             ServerInstance->Modules->Attach(eventlist, this, sizeof(eventlist) / sizeof(Implementation));
             ServerInstance->Modules->AddService(iohook);
             ServerInstance->Modules->AddService(mycommand);
             ServerInstance->Modules->AddService(mycommand2);
             ServerInstance->Modules->AddService(mycommand3);
-            ServerInstance->Modules->AddService(ecodepage);
-        }
+			ServerInstance->Modules->AddService(ecodepage);
+		}
 
         void SaveExisting()
         {
@@ -379,7 +397,7 @@ class ModuleCodepage : public ModuleCodepageBase
                     if_found_in_hash(iter2, (*iter)->GetServerPort(), port_hash)
                     found = iter2->second;
                 }
-                set_codepage((*iter), found);
+				set_codepage((*iter), found);
             }
         }
 
@@ -673,51 +691,51 @@ class ModuleCodepage : public ModuleCodepageBase
             {
                 result = raw_read(u, recvq);
             }
-            int count = recvq.length();
+
+			if (result <= 0)
+				return result;
 
             if_found_in_hash(iter, fd, fd_hash)
             tmpio = recode[iter->second];
             else
                 tmpio.in = (iconv_t) - 1;
 
-            if (result <= 0)
-                return result;
-
-            char * outbuffer = new char[count * 4 + 4];
-            size_t cnt = count;
-
             if (tmpio.in != (iconv_t) - 1)
             {
                 /* translating encodings here */
-                char * tmpbuffer = new char[count + 4];
-                char * writestart = tmpbuffer;
+				size_t cnt = recvq.length();
+				ensure_capacity(large_buffer, large_buffer_size, cnt * 4 + 4);
+				ensure_capacity(buffer, buffer_size, cnt  + 4);
+				char * writestart = buffer;
 
                 int delta = 0;
                 if_found_in_hash(iter3, fd, buffer_hash)
                 {
                     delta = iter3->second.count;
-                    memcpy(tmpbuffer, iter3->second.buffer, delta);
+					memcpy(buffer, iter3->second.buffer, delta);
                     writestart += delta;
+					cnt += delta;
                     buffer_hash.erase(iter3);
                 }
 
-                const char* buffer = recvq.c_str();
-                memcpy(writestart, buffer, count);
+				memcpy(writestart, recvq.c_str(), recvq.length());
 
                 if (tmpio.intable != NULL)
                 {
-                    itableconvert(tmpio.intable, outbuffer, tmpbuffer, count + delta);
+					itableconvert(tmpio.intable, large_buffer, buffer, cnt);
                 }
                 else
                 {
-                    cnt = i_convert(tmpio.in, outbuffer, tmpbuffer, count + delta, count * 4 + 4, false, fd);
+					cnt = i_convert(tmpio.in, large_buffer, buffer, cnt, large_buffer_size, false, fd);
 
                 }
-                delete [] tmpbuffer;
-                recvq.assign(outbuffer, cnt);
-            }
+				recvq.assign(large_buffer, cnt);
+//				if (triggered)
+	//				ServerInstance->Logs->Log("m_codepage.so", DEFAULT, "TRIGGERED_EVENT_2 <<< %s", recvq.c_str());
 
-            return result;
+			}
+
+            return 1;
 
         }
 
@@ -781,27 +799,23 @@ class ModuleCodepage : public ModuleCodepageBase
 
                 int count = sendq.length();
                 size_t cnt = count;
-                char * tmpbuffer = new char[count * 4 + 1]; /* assuming UTF-8 is 4 chars wide max. */
-                const char* buffer = sendq.c_str();
-                if (tmpio.out != (iconv_t) - 1)
-                {
-                    /* translating encodings here */
-                    if (tmpio.outtable != NULL)
-                    {
-                        itableconvert(tmpio.outtable, tmpbuffer, buffer, count);
-                        tmpbuffer[count] = 0;
-                    }
-                    else
-                        cnt = i_convert(tmpio.out, tmpbuffer, (char *)buffer, count, count * 4);
-                }
-                else
-                {
-                    memcpy(tmpbuffer, buffer, count);
-                    tmpbuffer[count] = 0;
-                }
+				ensure_capacity(large_buffer, large_buffer_size, count * 4 + 1);
+                const char* writebuffer = sendq.c_str();
+				if (tmpio.out != (iconv_t)-1)
+				{
+					/* translating encodings here */
+					if (tmpio.outtable != NULL)
+					{
+						itableconvert(tmpio.outtable, large_buffer, writebuffer, count);
+						large_buffer[count] = 0;
+					}
+					else
+						cnt = i_convert(tmpio.out, large_buffer, (char *)writebuffer, count, count * 4);
+					tmp_sendq.assign(large_buffer, cnt);
+				}
+				else
+					tmp_sendq.assign(sendq);
 
-                tmp_sendq.assign(tmpbuffer, cnt);
-                delete[] tmpbuffer;
             }
 
             int tmpres = 0;
@@ -812,7 +826,6 @@ class ModuleCodepage : public ModuleCodepageBase
             else
             {
                 //ServerInstance->SE->Send(u, sendq.c_str(), sendq.length(), 0);
-                ServerInstance->Logs->Log("m_codepage.so", DEFAULT, "<<<%s", tmp_sendq.c_str());
                 tmpres = raw_write(u, tmp_sendq);
             }
 
@@ -821,7 +834,8 @@ class ModuleCodepage : public ModuleCodepageBase
 
             //saving unsent data
             buffer_hash_write[fd] = tmp_sendq;
-            return 0;
+			//ServerInstance->Logs->Log("m_codepage.so", DEFAULT, "TRIGGERED_EVENT_1 <<< %s", tmp_sendq.c_str());
+			return 0;
         }
 
         int raw_write(StreamSocket* user, std::string& front)
@@ -901,10 +915,10 @@ class ModuleCodepage : public ModuleCodepageBase
             }
         }
 
-        virtual void On005Numeric(std::string& output)
-        {
-            output += " CODEPAGES";
-        }
+		virtual void On005Numeric(std::string& output)
+		{
+			output += " CODEPAGES";
+		}
 
         void OnUnloadModule  (Module* mod)
         {
@@ -986,11 +1000,13 @@ class ModuleCodepage : public ModuleCodepageBase
                 ModifyIOHook(user->eh, iter->second);
             }
             iClose();
+			delete [] buffer;
+			delete [] large_buffer;
         }
 
         virtual Version GetVersion()
         {
-            return Version("$Id$", VF_OPTCOMMON);
+            return Version("Translates raw irc traffic from/to client choosing conversion encoding by server port or user choice.", VF_OPTCOMMON);
         }
 
 };
